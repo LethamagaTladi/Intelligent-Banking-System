@@ -57,6 +57,43 @@
     return (a + b).toUpperCase();
   }
 
+  // Initials for the registration "Initials" field are derived only from
+  // the First name field — one letter per name typed there (e.g. "Thandi
+  // Palesa" -> "TP"), never combining in the last name.
+  function initialsFromFirstName(firstNameField) {
+    return String(firstNameField || '')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(part => part[0].toUpperCase())
+      .join('');
+  }
+
+  /* -------- South African ID number parsing (YYMMDDSSSSCAZ) --------
+     Digits 1-6 encode the date of birth, digits 7-10 encode gender
+     (< 5000 = female, >= 5000 = male). Used to auto-fill Date of birth
+     and Gender on the registration form from the ID number captured
+     in Step 1, without letting the user type them independently. */
+  function parseSaIdNumber(idNumber) {
+    if (!/^\d{13}$/.test(idNumber || '')) return null;
+    const yy = idNumber.slice(0, 2), mm = idNumber.slice(2, 4), dd = idNumber.slice(4, 6);
+    const month = parseInt(mm, 10), day = parseInt(dd, 10);
+    const genderDigits = parseInt(idNumber.slice(6, 10), 10);
+    const gender = genderDigits < 5000 ? 'FEMALE' : 'MALE';
+
+    let dob = null;
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const currentYY = new Date().getFullYear() % 100;
+      const century = parseInt(yy, 10) > currentYY ? 1900 : 2000;
+      const fullYear = century + parseInt(yy, 10);
+      const d = new Date(fullYear, month - 1, day);
+      if (d.getFullYear() === fullYear && d.getMonth() === month - 1 && d.getDate() === day) {
+        dob = `${fullYear}-${mm}-${dd}`;
+      }
+    }
+    return { dob, gender };
+  }
+
   function formatCurrency(n) {
     const v = Number(n || 0);
     return 'R ' + v.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -213,6 +250,7 @@
       updateIdTypeUI();
     }
     if (screenId === 'register-details') {
+      applyIdDerivedFields();
       initAddressMap('reg2-map-physical', null, null, makeCoordsHandler('reg2-phys-lat', 'reg2-phys-lng', 'reg2-phys-coords'));
       if (!$('#reg2-postal-same').checked) {
         initAddressMap('reg2-map-postal', null, null, makeCoordsHandler('reg2-post-lat', 'reg2-post-lng', 'reg2-post-coords'));
@@ -261,6 +299,19 @@
   /* delegated logout (titlebar dropdown + sidebar) */
   document.addEventListener('click', (e) => {
     if (e.target.closest('.js-logout')) doLogout();
+  });
+
+  /* mobile sidebar drawer (hamburger toggle + backdrop) */
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.js-sidebar-toggle')) return;
+    e.preventDefault();
+    const shell = e.target.closest('.app-shell');
+    if (!shell) return;
+    const sidebar = shell.querySelector('.sidebar');
+    const backdrop = shell.querySelector('.sidebar-backdrop');
+    const opening = !sidebar.classList.contains('open');
+    sidebar.classList.toggle('open', opening);
+    if (backdrop) backdrop.classList.toggle('open', opening);
   });
 
   /* titlebar avatar dropdown */
@@ -410,10 +461,40 @@
   $('#reg2-initials').addEventListener('input', () => { initialsEdited = true; });
   function autoInitials() {
     if (initialsEdited) return;
-    $('#reg2-initials').value = initials($('#reg2-first').value, $('#reg2-last').value);
+    $('#reg2-initials').value = initialsFromFirstName($('#reg2-first').value);
   }
   $('#reg2-first').addEventListener('input', autoInitials);
-  $('#reg2-last').addEventListener('input', autoInitials);
+
+  /* -------- ID number (read-only) + auto-filled Date of birth / Gender -------- */
+  function applyIdDerivedFields() {
+    const idType = regState.idType;
+    const idNumber = regState.idNumber || '';
+    $('#reg2-idnumber').value = idNumber
+      ? `${idNumber} (${LABELS.idType[idType] || idType})`
+      : '';
+
+    const dobInput = $('#reg2-dob');
+    const genderSelect = $('#reg2-gender');
+    const dobHint = $('#reg2-dob-hint');
+
+    if (idType === 'SOUTH_AFRICAN_ID') {
+      const parsed = parseSaIdNumber(idNumber);
+      if (parsed && parsed.dob) {
+        dobInput.value = parsed.dob;
+        dobInput.readOnly = true;
+      } else {
+        dobInput.value = '';
+        dobInput.readOnly = false;
+      }
+      genderSelect.value = parsed ? parsed.gender : genderSelect.value;
+      genderSelect.disabled = !!parsed;
+      dobHint.textContent = 'Auto-filled from your South African ID number.';
+    } else {
+      dobInput.readOnly = false;
+      genderSelect.disabled = false;
+      dobHint.textContent = '';
+    }
+  }
 
   $('#reg2-postal-same').addEventListener('change', (e) => {
     const show = !e.target.checked;
@@ -440,6 +521,7 @@
     req('#reg2-nationality', '#reg2-nationality-error');
     req('#reg2-occupation', '#reg2-occupation-error');
     req('#reg2-income', '#reg2-income-error');
+    req('#reg2-dob', '#reg2-dob-error');
 
     const emailEl = $('#reg2-email');
     if (!EMAIL_RE.test(emailEl.value.trim())) { setFieldError(emailEl, $('#reg2-email-error'), true); valid = false; }
@@ -480,6 +562,10 @@
       postalAddress = postResult.address;
     }
 
+    const termsEl = $('#reg2-terms');
+    if (!termsEl.checked) { setFieldError(termsEl, $('#reg2-terms-error'), true); valid = false; }
+    else setFieldError(termsEl, $('#reg2-terms-error'), false);
+
     $('#reg2-error-alert').hidden = valid;
     if (!valid) return; // loop back to Enter Details (stay on this screen)
 
@@ -487,6 +573,7 @@
     regState.firstName = $('#reg2-first').value.trim();
     regState.lastName = $('#reg2-last').value.trim();
     regState.initials = $('#reg2-initials').value.trim().toUpperCase();
+    regState.dateOfBirth = $('#reg2-dob').value;
     regState.gender = $('#reg2-gender').value;
     regState.maritalStatus = $('#reg2-marital').value;
     regState.nationality = $('#reg2-nationality').value.trim();
@@ -523,6 +610,7 @@
       firstName: regState.firstName,
       lastName: regState.lastName,
       initials: regState.initials,
+      dateOfBirth: regState.dateOfBirth,
       maritalStatus: regState.maritalStatus,
       gender: regState.gender,
       residency: regState.residency,
@@ -559,6 +647,7 @@
     clearForm($('#register-step1-form'));
     clearForm($('#register-details-form'));
     initialsEdited = false;
+    $('#reg2-terms').checked = false;
     $('#reg2-postal-same').checked = true;
     $('#reg2-postal-fields').style.display = 'none';
     setCoordsInputs('reg2-phys-lat', 'reg2-phys-lng', 'reg2-phys-coords', null, null);
@@ -756,7 +845,7 @@
     const user = currentUser();
     if (!user) { goTo('login'); return; }
     updateTitlebar(user);
-    $('#dash-welcome').textContent = `Welcome back, ${user.firstName}`;
+    $('#dash-welcome').textContent = `Welcome, ${user.firstName}`;
     $('#dash-acc-label').textContent = `${user.accountType} · ${user.accountNumber.slice(-4)}`;
     $('#dash-balance').textContent = formatCurrency(user.balance);
 
@@ -793,6 +882,7 @@
     if (!user) { goTo('login'); return; }
 
     exitEditMode();
+    exitSofEditMode();
     $('#profile-save-success').hidden = true;
     $('#profile-save-error').hidden = true;
     updateTitlebar(user);
@@ -801,27 +891,25 @@
     $('#profile-summary-avatar').textContent = av;
     $('#profile-summary-name').textContent = `${LABELS.title[user.title] || ''} ${user.firstName} ${user.lastName}`.trim();
     $('#profile-summary-type').textContent = user.accountType;
-    $('#profile-summary-username').textContent = user.username;
     $('#profile-summary-accno').textContent = user.accountNumber;
 
-    // Personal & identification (read-only)
-    $('#pv-title').textContent = LABELS.title[user.title] || user.title;
+    // Personal & identification (Title is the one field editable here)
+    $('#pv-title-select').value = user.title;
     $('#pv-fullname').textContent = `${user.firstName} ${user.lastName}`;
     $('#pv-initials').textContent = user.initials;
+    $('#pv-dob').textContent = user.dateOfBirth || '—';
     $('#pv-gender').textContent = LABELS.gender[user.gender] || user.gender;
     $('#pv-marital').textContent = LABELS.marital[user.maritalStatus] || user.maritalStatus;
     $('#pv-nationality').textContent = user.nationality;
     $('#pv-residency').textContent = LABELS.residency[user.residency] || user.residency;
     $('#pv-ethnic').textContent = LABELS.ethnic[user.ethnicGroup] || user.ethnicGroup;
-    $('#pv-occupation').textContent = user.occupation;
-    $('#pv-income').textContent = user.incomeSource;
     $('#pv-idtype').textContent = LABELS.idType[user.idType] || user.idType;
     $('#pv-id').textContent = user.idNumber;
 
-    // Account information
-    $('#pv-username').textContent = user.username;
+    // Source of Funds
     $('#pv-acctype').textContent = user.accountType;
-    $('#pv-accno').textContent = user.accountNumber;
+    $('#pv-occupation').textContent = user.occupation;
+    $('#pv-income').textContent = user.incomeSource;
 
     // Contact
     $('#pv-email').textContent = user.contact.emailAddress;
@@ -839,13 +927,70 @@
       ? 'Same as residential address' : formatAddress(postAddr);
 
     $('#sec-username').textContent = user.username;
-    $('#sec-2fa-toggle').checked = !!user.twoFactorEnabled;
   }
 
   function exitEditMode() {
     $('#profile-view-mode').style.display = '';
     $('#profile-edit-form').style.display = 'none';
   }
+
+  function exitSofEditMode() {
+    $('#profile-sof-view-mode').style.display = '';
+    $('#profile-sof-edit-form').style.display = 'none';
+  }
+
+  /* -------- Source of Funds (editable) -------- */
+  $('#profile-sof-edit-btn').addEventListener('click', () => {
+    const user = currentUser();
+    if (!user) return;
+
+    $('#pe-banktype').value = user.bankType;
+    $('#pe-occupation').value = user.occupation;
+    $('#pe-income').value = user.incomeSource;
+    $all('#profile-sof-edit-form .field-error').forEach(el => el.classList.remove('show'));
+    $all('#profile-sof-edit-form input, #profile-sof-edit-form select').forEach(el => el.classList.remove('invalid'));
+
+    $('#profile-sof-view-mode').style.display = 'none';
+    $('#profile-sof-edit-form').style.display = '';
+    $('#profile-save-success').hidden = true;
+  });
+
+  $('#profile-sof-cancel-edit').addEventListener('click', () => {
+    exitSofEditMode();
+  });
+
+  $('#profile-sof-edit-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const user = currentUser();
+    if (!user) return;
+
+    let valid = true;
+    const occEl = $('#pe-occupation'), incomeEl = $('#pe-income');
+    if (!occEl.value.trim()) { setFieldError(occEl, $('#pe-occupation-error'), true); valid = false; }
+    else setFieldError(occEl, $('#pe-occupation-error'), false);
+    if (!incomeEl.value.trim()) { setFieldError(incomeEl, $('#pe-income-error'), true); valid = false; }
+    else setFieldError(incomeEl, $('#pe-income-error'), false);
+
+    if (!valid) {
+      $('#profile-save-error').hidden = false;
+      $('#profile-save-success').hidden = true;
+      return;
+    }
+
+    const bankType = $('#pe-banktype').value;
+    IBSDb.updateUser(user.username, {
+      bankType: bankType,
+      accountType: IBS_BANK_TYPE_LABELS[bankType] || user.accountType,
+      occupation: occEl.value.trim(),
+      incomeSource: incomeEl.value.trim()
+    });
+
+    $('#profile-save-error').hidden = true;
+    renderProfile();
+    $('#profile-save-success').hidden = false;
+    showToast('Source of funds updated successfully', 'success');
+    setTimeout(() => { $('#profile-save-success').hidden = true; }, 3500);
+  });
 
   $('#profile-edit-btn').addEventListener('click', () => {
     const user = currentUser();
@@ -984,12 +1129,13 @@
     showToast('Password updated successfully', 'success');
   });
 
-  /* -------- Two-factor toggle -------- */
-  $('#sec-2fa-toggle').addEventListener('change', (e) => {
+  /* -------- Title (the one Personal & identification field that's editable) -------- */
+  $('#pv-title-select').addEventListener('change', (e) => {
     const user = currentUser();
     if (!user) return;
-    IBSDb.updateUser(user.username, { twoFactorEnabled: e.target.checked });
-    showToast(e.target.checked ? 'Two-factor authentication enabled' : 'Two-factor authentication disabled');
+    IBSDb.updateUser(user.username, { title: e.target.value });
+    renderProfile();
+    showToast('Title updated successfully', 'success');
   });
 
   /* ============================================================
