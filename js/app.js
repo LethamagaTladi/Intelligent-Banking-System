@@ -15,7 +15,6 @@
 
   const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const ID_RE = /^\d{13}$/;
-  const PASSPORT_RE = /^[A-Za-z0-9]{6,9}$/;
   const CELL_RE = /^(0\d{9}|(\+27|27)\d{9})$/;
   const PASSWORD_RE = /^(?=.*[A-Za-z])(?=.*\d).{8,}$/;
 
@@ -23,10 +22,26 @@
     title: { MR: 'Mr', MRS: 'Mrs', MS: 'Ms', MISS: 'Miss', DR: 'Dr', PROF: 'Prof' },
     gender: { MALE: 'Male', FEMALE: 'Female', OTHER: 'Other' },
     marital: { SINGLE: 'Single', MARRIED: 'Married', DIVORCED: 'Divorced', WIDOWED: 'Widowed', LIFE_PARTNER: 'Life partner' },
-    residency: { RSA_RESIDENT: 'RSA resident', NON_RESIDENT: 'Non-resident' },
+    residency: {
+      BY_BIRTH: 'South African citizen by birth',
+      BY_DESCENT: 'South African citizen by descent',
+      BY_NATURALISATION: 'South African citizen by naturalisation',
+      PERMANENT_RESIDENT: 'Permanent resident'
+    },
     ethnic: { BLACK: 'Black African', COLOURED: 'Coloured', INDIAN_ASIAN: 'Indian / Asian', WHITE: 'White', OTHER: 'Other' },
     idType: { SOUTH_AFRICAN_ID: 'South African ID', PASSPORT: 'Passport' },
     prefMethod: { EMAIL: 'Email', SMS: 'SMS', PHONE: 'Phone' },
+    incomeSource: {
+      SALARY: 'Salary / employment income',
+      BUSINESS_INCOME: 'Business income',
+      INVESTMENTS: 'Investments / dividends',
+      SAVINGS: 'Savings',
+      PENSION: 'Pension / retirement funds',
+      INHERITANCE: 'Inheritance',
+      RENTAL_INCOME: 'Rental income',
+      GIFT: 'Gift',
+      OTHER: 'Other'
+    },
     province: {
       EASTERN_CAPE: 'Eastern Cape', FREE_STATE: 'Free State', GAUTENG: 'Gauteng',
       KWAZULU_NATAL: 'KwaZulu-Natal', LIMPOPO: 'Limpopo', MPUMALANGA: 'Mpumalanga',
@@ -92,6 +107,36 @@
       }
     }
     return { dob, gender };
+  }
+
+  /* -------- South African ID number validation (format + Luhn checksum) --------
+     A genuine SA ID number must: be 13 digits, encode a real calendar date in
+     its first 6 digits, carry a valid citizenship digit (0 = citizen, 1 =
+     permanent resident) in position 11, and pass the Luhn checksum that
+     protects the final digit. */
+  function luhnValid(digits) {
+    let sum = 0;
+    let alternate = false;
+    for (let i = digits.length - 1; i >= 0; i--) {
+      let n = parseInt(digits.charAt(i), 10);
+      if (alternate) {
+        n *= 2;
+        if (n > 9) n -= 9;
+      }
+      sum += n;
+      alternate = !alternate;
+    }
+    return sum % 10 === 0;
+  }
+
+  function isValidSaId(idNumber) {
+    const id = String(idNumber || '');
+    if (!ID_RE.test(id)) return false;
+    const parsed = parseSaIdNumber(id);
+    if (!parsed || !parsed.dob) return false;
+    const citizenshipDigit = id.charAt(10);
+    if (citizenshipDigit !== '0' && citizenshipDigit !== '1') return false;
+    return luhnValid(id);
   }
 
   function formatCurrency(n) {
@@ -222,6 +267,14 @@
     };
   }
 
+  /* -------- Postal code fields: digits only -------- */
+  $all('.js-digits-only').forEach(el => {
+    el.addEventListener('input', () => {
+      const cleaned = el.value.replace(/\D/g, '');
+      if (cleaned !== el.value) el.value = cleaned;
+    });
+  });
+
   /* ---------------------------------- screen router ---------------------------------- */
   const AUTH_REQUIRED = ['dashboard', 'profile', 'placeholder'];
 
@@ -247,7 +300,6 @@
     }
     if (screenId === 'register-step1') {
       $('#reg1-error-alert').hidden = true;
-      updateIdTypeUI();
     }
     if (screenId === 'register-details') {
       applyIdDerivedFields();
@@ -406,34 +458,14 @@
      ============================================================ */
   const regState = {};
 
-  function updateIdTypeUI() {
-    const type = $('#reg1-idtype').value;
-    const label = $('#reg1-id-label');
-    const input = $('#reg1-id');
-    if (type === 'PASSPORT') {
-      label.innerHTML = 'Passport number <span class="required">*</span>';
-      input.placeholder = 'Passport number';
-      input.maxLength = 9;
-    } else {
-      label.innerHTML = 'South African ID number <span class="required">*</span>';
-      input.placeholder = '13-digit ID number';
-      input.maxLength = 13;
-    }
-  }
-  $('#reg1-idtype').addEventListener('change', updateIdTypeUI);
-
   $('#register-step1-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const emailInput = $('#reg1-email'), idInput = $('#reg1-id');
     const email = emailInput.value.trim();
     const idNumber = idInput.value.trim();
-    const idType = $('#reg1-idtype').value;
 
     const emailValid = EMAIL_RE.test(email);
-    const idValid = idType === 'PASSPORT' ? PASSPORT_RE.test(idNumber) : ID_RE.test(idNumber);
-    $('#reg1-id-error').textContent = idType === 'PASSPORT'
-      ? 'Enter a valid passport number (6-9 letters/digits).'
-      : 'Enter a valid 13-digit ID number.';
+    const idValid = isValidSaId(idNumber);
 
     setFieldError(emailInput, $('#reg1-email-error'), !emailValid);
     setFieldError(idInput, $('#reg1-id-error'), !idValid);
@@ -441,7 +473,7 @@
 
     const existing = IBSDb.findByEmailOrId(email, idNumber);
     if (existing) {
-      $('#reg1-error-text').textContent = 'An account with this email or ID/passport number already exists. Redirecting you to sign in…';
+      $('#reg1-error-text').textContent = 'An account with this email or ID number already exists. Redirecting you to sign in…';
       $('#reg1-error-alert').hidden = false;
       setTimeout(() => goTo('login', { infoMessage: 'This account already exists. Please sign in below.' }), 1400);
       return;
@@ -449,7 +481,7 @@
 
     regState.email = email;
     regState.idNumber = idNumber;
-    regState.idType = idType;
+    regState.idType = 'SOUTH_AFRICAN_ID';
     goTo('register-details');
     $('#reg2-email').value = email;
   });
@@ -467,33 +499,24 @@
 
   /* -------- ID number (read-only) + auto-filled Date of birth / Gender -------- */
   function applyIdDerivedFields() {
-    const idType = regState.idType;
     const idNumber = regState.idNumber || '';
-    $('#reg2-idnumber').value = idNumber
-      ? `${idNumber} (${LABELS.idType[idType] || idType})`
-      : '';
+    $('#reg2-idnumber').value = idNumber ? `${idNumber} (South African ID)` : '';
 
     const dobInput = $('#reg2-dob');
     const genderSelect = $('#reg2-gender');
     const dobHint = $('#reg2-dob-hint');
 
-    if (idType === 'SOUTH_AFRICAN_ID') {
-      const parsed = parseSaIdNumber(idNumber);
-      if (parsed && parsed.dob) {
-        dobInput.value = parsed.dob;
-        dobInput.readOnly = true;
-      } else {
-        dobInput.value = '';
-        dobInput.readOnly = false;
-      }
-      genderSelect.value = parsed ? parsed.gender : genderSelect.value;
-      genderSelect.disabled = !!parsed;
-      dobHint.textContent = 'Auto-filled from your South African ID number.';
+    const parsed = parseSaIdNumber(idNumber);
+    if (parsed && parsed.dob) {
+      dobInput.value = parsed.dob;
+      dobInput.readOnly = true;
     } else {
+      dobInput.value = '';
       dobInput.readOnly = false;
-      genderSelect.disabled = false;
-      dobHint.textContent = '';
     }
+    genderSelect.value = parsed ? parsed.gender : genderSelect.value;
+    genderSelect.disabled = !!parsed;
+    dobHint.textContent = 'Auto-filled from your South African ID number.';
   }
 
   $('#reg2-postal-same').addEventListener('change', (e) => {
@@ -518,7 +541,6 @@
     req('#reg2-first', '#reg2-first-error');
     req('#reg2-last', '#reg2-last-error');
     req('#reg2-initials', '#reg2-initials-error');
-    req('#reg2-nationality', '#reg2-nationality-error');
     req('#reg2-occupation', '#reg2-occupation-error');
     req('#reg2-income', '#reg2-income-error');
     req('#reg2-dob', '#reg2-dob-error');
@@ -893,8 +915,8 @@
     $('#profile-summary-type').textContent = user.accountType;
     $('#profile-summary-accno').textContent = user.accountNumber;
 
-    // Personal & identification (Title is the one field editable here)
-    $('#pv-title-select').value = user.title;
+    // Personal & identification (read-only, KYC-locked)
+    $('#pv-title').textContent = LABELS.title[user.title] || user.title;
     $('#pv-fullname').textContent = `${user.firstName} ${user.lastName}`;
     $('#pv-initials').textContent = user.initials;
     $('#pv-dob').textContent = user.dateOfBirth || '—';
@@ -909,7 +931,7 @@
     // Source of Funds
     $('#pv-acctype').textContent = user.accountType;
     $('#pv-occupation').textContent = user.occupation;
-    $('#pv-income').textContent = user.incomeSource;
+    $('#pv-income').textContent = LABELS.incomeSource[user.incomeSource] || user.incomeSource;
 
     // Contact
     $('#pv-email').textContent = user.contact.emailAddress;
@@ -1099,6 +1121,60 @@
     setTimeout(() => { $('#profile-save-success').hidden = true; }, 3500);
   });
 
+  /* -------- Edit username modal -------- */
+  $('#sec-edit-username-btn').addEventListener('click', () => {
+    const user = currentUser();
+    if (!user) return;
+    clearForm($('#edit-username-form'));
+    $('#eu-current').value = user.username;
+    $('#username-modal').classList.add('active');
+  });
+  $('#eu-cancel').addEventListener('click', closeUsernameModal);
+  $('#username-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'username-modal') closeUsernameModal();
+  });
+  function closeUsernameModal() { $('#username-modal').classList.remove('active'); }
+
+  $('#edit-username-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const user = currentUser();
+    if (!user) return;
+
+    const newInput = $('#eu-new'), confirmInput = $('#eu-confirm');
+    const newUsername = newInput.value.trim();
+    const confirmUsername = confirmInput.value.trim();
+
+    const lengthValid = newUsername.length >= 4;
+    const unchanged = lengthValid && newUsername.toLowerCase() === user.username.toLowerCase();
+    const taken = lengthValid && !unchanged && IBSDb.findByUsername(newUsername);
+    let valid = true;
+
+    if (!lengthValid) {
+      setFieldError(newInput, $('#eu-new-error'), true, 'Username must be at least 4 characters.');
+      valid = false;
+    } else if (taken) {
+      setFieldError(newInput, $('#eu-new-error'), true, 'This username is already taken.');
+      valid = false;
+    } else {
+      setFieldError(newInput, $('#eu-new-error'), false);
+    }
+
+    if (confirmUsername !== newUsername || !confirmUsername) {
+      setFieldError(confirmInput, $('#eu-confirm-error'), true);
+      valid = false;
+    } else {
+      setFieldError(confirmInput, $('#eu-confirm-error'), false);
+    }
+
+    if (!valid) return;
+
+    IBSDb.updateUser(user.username, { username: newUsername });
+    IBSDb.startSession(newUsername); // keep the user signed in under the new username
+    closeUsernameModal();
+    renderProfile();
+    showToast('Username updated successfully', 'success');
+  });
+
   /* -------- Change password modal -------- */
   $('#sec-change-password-btn').addEventListener('click', () => {
     clearForm($('#change-password-form'));
@@ -1129,20 +1205,10 @@
     showToast('Password updated successfully', 'success');
   });
 
-  /* -------- Title (the one Personal & identification field that's editable) -------- */
-  $('#pv-title-select').addEventListener('change', (e) => {
-    const user = currentUser();
-    if (!user) return;
-    IBSDb.updateUser(user.username, { title: e.target.value });
-    renderProfile();
-    showToast('Title updated successfully', 'success');
-  });
-
   /* ============================================================
      INITIAL ROUTE
      ============================================================ */
   document.addEventListener('DOMContentLoaded', () => {
-    updateIdTypeUI();
     const session = IBSDb.getSession();
     if (session && IBSDb.findByUsername(session.username)) {
       goTo('dashboard');
